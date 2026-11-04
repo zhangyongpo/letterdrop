@@ -20,7 +20,7 @@ import kotlin.math.min
  * 1. 定时在顶部随机生成大写/小写字母并向下掉落；
  * 2. 念对字母（Vosk 离线识别）或点中字母 -> 消失动画；
  * 3. 落到地面 -> 扣一条命，命数为 0 时游戏结束；
- * 4. 掉落速度随得分自动提升：基础为第 5 档，每累计 30 分升 1 档，无上限。
+ * 4. 掉落速度随得分自动提升：基础为第 5 档，每累计 20 分升 1 档，无上限。
  */
 class GameView @JvmOverloads constructor(
     context: Context,
@@ -178,10 +178,10 @@ class GameView @JvmOverloads constructor(
         }
     }
 
-    /** 答对一个字母：得分 +1，并依据得分重新计算速度档位（每 30 分升 1 档，无上限） */
+    /** 答对一个字母：得分 +1，并依据得分重新计算速度档位（每 20 分升 1 档，无上限） */
     private fun bumpScore() {
         score += 1
-        val level = BASE_LEVEL + score / 30
+        val level = BASE_LEVEL + score / 20
         speedLevel = level
         baseFallSpeed = speedForLevel(level)
         fallSpeed = baseFallSpeed
@@ -256,7 +256,7 @@ class GameView @JvmOverloads constructor(
 
         /**
          * 档位 -> 下落速度 px/ms。
-         * 第 5 档(基础)约 0.211，每升 1 档约 +0.038；档位无上限，速度随之线性增长。
+         * 第 5 档(基础)约 0.211，每升 1 档约 +0.038；每 20 分升 1 档，档位无上限，速度随之线性增长。
          */
         fun speedForLevel(level: Int): Float {
             val l = (level - 1).coerceAtLeast(0)
