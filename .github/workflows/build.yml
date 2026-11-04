@@ -10,6 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ANDROID_HOME: ${{ github.workspace }}/android-sdk
+      # GitHub runner 预置了 ANDROID_SDK_ROOT 指向 /usr/local/lib/android/sdk，
+      # 与 ANDROID_HOME 不一致会让 AGP 报 "different paths to the SDK" 而失败，这里统一成同一个。
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
 
     steps:
       - name: Checkout code
@@ -31,11 +34,11 @@ jobs:
           mv $SDK/cmdline-tools/cmdline-tools $SDK/cmdline-tools/latest
           echo "$SDK/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-      # 接受许可并安装编译所需组件
+      # 接受许可并安装编译所需组件（显式指定 sdk_root，确保装到 ANDROID_HOME）
       - name: Accept licenses & install SDK packages
         run: |
-          yes | sdkmanager --licenses
-          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses
+          sdkmanager --sdk_root="$ANDROID_HOME" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -43,7 +46,10 @@ jobs:
           gradle-version: '8.5'
 
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+        run: |
+          # 编译时只保留 ANDROID_HOME 一种 SDK 注入方式，彻底避免多来源冲突
+          unset ANDROID_SDK_ROOT
+          gradle assembleDebug --no-daemon
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
