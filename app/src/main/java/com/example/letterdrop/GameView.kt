@@ -18,9 +18,9 @@ import kotlin.math.min
  * 游戏画布：自绘 SurfaceView + 游戏线程。
  *
  * 1. 定时在顶部随机生成大写/小写字母并向下掉落；
- * 2. 通过麦克风念对字母 -> onLetterHeard 触发“消失动画”；
- *    无语音服务时也可直接点中字母消除（点字模式，保底玩法）；
- * 3. 字母落到地面 -> 扣一条命，命数为 0 时游戏结束。
+ * 2. 念对字母（Vosk 离线识别）或点中字母 -> 消失动画；
+ * 3. 落到地面 -> 扣一条命，命数为 0 时游戏结束；
+ * 4. 掉落速度可在设置菜单里配置（1~10 档），并保存在 SharedPreferences。
  */
 class GameView @JvmOverloads constructor(
     context: Context,
@@ -43,7 +43,8 @@ class GameView @JvmOverloads constructor(
 
     private var lastSpawn = 0L
     private var spawnInterval = 1500L   // 生成间隔(ms)，随时间缩短
-    private var fallSpeed = 0.15f       // 下落速度(px/ms)，随时间加快
+    private var fallSpeed = DEFAULT_SPEED  // 当前下落速度(px/ms)
+    private var baseFallSpeed = DEFAULT_SPEED
 
     var score = 0
         private set
@@ -51,6 +52,14 @@ class GameView @JvmOverloads constructor(
         private set
     var gameOver = false
         private set
+
+    /** 当前速度档位 1~10 */
+    var speedLevel = DEFAULT_LEVEL
+        private set
+
+    /** 打开设置弹窗时暂停，避免弹窗期间字母落地扣命 */
+    @Volatile
+    var paused = false
 
     /** 是否允许点中字母消除（默认开启，作为无语音服务时的保底玩法） */
     var touchEnabled = true
@@ -80,15 +89,24 @@ class GameView @JvmOverloads constructor(
         mainHandler.post { stateListeners.forEach { it() } }
     }
 
+    /** 设置掉落速度档位（1 最慢，10 最快），立即生效 */
+    fun setSpeedLevel(level: Int) {
+        speedLevel = level.coerceIn(1, 10)
+        baseFallSpeed = speedForLevel(speedLevel)
+        synchronized(lock) {
+            fallSpeed = baseFallSpeed
+        }
+    }
+
     fun startGame() {
         synchronized(lock) {
             letters.clear()
+            fallSpeed = baseFallSpeed
         }
         score = 0
         lives = 3
         gameOver = false
         spawnInterval = 1500L
-        fallSpeed = 0.15f
         lastSpawn = System.currentTimeMillis()
         notifyState()
     }
@@ -128,7 +146,7 @@ class GameView @JvmOverloads constructor(
     }
 
     private fun update(dt: Long, now: Long) {
-        if (gameOver) return
+        if (gameOver || paused) return
 
         synchronized(lock) {
             // 生成新字母，并逐步提升难度
@@ -136,7 +154,7 @@ class GameView @JvmOverloads constructor(
                 spawnLetter()
                 lastSpawn = now
                 spawnInterval = (spawnInterval * 0.98f).toLong().coerceAtLeast(600L)
-                fallSpeed = (fallSpeed * 1.01f).coerceAtMost(0.6f)
+                fallSpeed = (fallSpeed * 1.01f).coerceAtMost(baseFallSpeed * 2.5f)
             }
 
             val dy = fallSpeed * dt
@@ -187,7 +205,7 @@ class GameView @JvmOverloads constructor(
     /** 点字模式：点中字母即消除，优先消掉最靠近地面的那个 */
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (touchEnabled && !gameOver && event.actionMasked == MotionEvent.ACTION_DOWN) {
+        if (touchEnabled && !gameOver && !paused && event.actionMasked == MotionEvent.ACTION_DOWN) {
             if (popLetterAt(event.x, event.y)) return true
         }
         return super.onTouchEvent(event)
@@ -226,5 +244,16 @@ class GameView @JvmOverloads constructor(
         } finally {
             holder.unlockCanvasAndPost(canvas)
         }
+    }
+
+    companion object {
+        const val DEFAULT_LEVEL = 5
+        private const val MIN_SPEED = 0.06f
+        private const val MAX_SPEED = 0.40f
+        private val DEFAULT_SPEED = speedForLevel(DEFAULT_LEVEL)
+
+        /** 档位 1~10 -> 下落速度 px/ms */
+        fun speedForLevel(level: Int): Float =
+            MIN_SPEED + (level.coerceIn(1, 10) - 1) * (MAX_SPEED - MIN_SPEED) / 9f
     }
 }

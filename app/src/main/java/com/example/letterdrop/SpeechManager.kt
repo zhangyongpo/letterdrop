@@ -1,198 +1,284 @@
 package com.example.letterdrop
 
-import android.annotation.SuppressLint
+import android.Manifest
 import android.content.Context
-import android.content.Intent
-import android.os.Build
-import android.os.Bundle
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import java.util.Locale
+import androidx.core.content.ContextCompat
+import org.json.JSONArray
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.StorageService
+import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 语音识别封装。
+ * Vosk 离线语音识别（Apache-2.0），完全不依赖 Google 服务 / 网络 / 账号。
  *
- * 国内多数手机没有 Google 语音服务，SpeechRecognizer 会不可用。
- * 因此依次尝试多种系统语音后端；全部不可用时通过 onUnavailable 通知上层
- * 降级为「点字模式」，保证游戏仍然可玩。
+ * 核心思路：
+ * 1. 用 26 个字母的英文读音（及常见同音词）构造受限 grammar，
+ *    把解码结果锁在小词表里，大幅降低误识别；
+ * 2. 自己用 AudioRecord 读 16k/16bit/mono PCM 喂给 Recognizer，
+ *    每识别完一句就 reset 继续，实现不间断的连续监听；
+ * 3. grammar 若因模型不支持或 OOV 创建失败，自动回退到默认语言模型，
+ *    再配合读音词映射兜底，保证功能不中断。
  *
- * 识别成功 -> onLetterHeard(字母)，并自动重启麦克风实现连续监听。
- * 注意：SpeechRecognizer 必须在主线程创建和使用。
+ * 模型来自 assets/model（vosk-model-small-en-us-0.15，约 40MB），
+ * 首次启动由 StorageService 异步解压到外部私有目录。
  */
 class SpeechManager(
     private val context: Context,
     private val onLetterHeard: (Char) -> Unit,
     private val onError: (String) -> Unit,
-    private val onUnavailable: (String) -> Unit
+    private val onUnavailable: (String) -> Unit,
+    private val onReady: () -> Unit
 ) {
+    companion object {
+        private const val SAMPLE_RATE = 16000
+        private const val DEDUP_MS = 350L
+
+        /**
+         * 字母读音 / 同音词 -> 字母。
+         * 尽量选常见英文词（bee、see、eye、oh、you、why …），
+         * 保证它们确实存在于 Vosk 的 en-us 词典中。
+         */
+        private val LETTER_WORDS: List<Pair<String, Char>> = listOf(
+            "a" to 'A', "ay" to 'A',
+            "bee" to 'B', "be" to 'B',
+            "see" to 'C', "sea" to 'C',
+            "dee" to 'D',
+            "ee" to 'E', "e" to 'E',
+            "ef" to 'F', "eff" to 'F',
+            "gee" to 'G', "jee" to 'G',
+            "aitch" to 'H', "h" to 'H',
+            "eye" to 'I', "i" to 'I',
+            "jay" to 'J',
+            "kay" to 'K', "k" to 'K',
+            "el" to 'L', "ell" to 'L',
+            "em" to 'M',
+            "en" to 'N',
+            "oh" to 'O', "o" to 'O',
+            "pee" to 'P', "p" to 'P',
+            "cue" to 'Q', "queue" to 'Q',
+            "are" to 'R', "r" to 'R',
+            "ess" to 'S', "s" to 'S',
+            "tea" to 'T', "tee" to 'T',
+            "you" to 'U', "u" to 'U',
+            "vee" to 'V',
+            "double u" to 'W', "doubleu" to 'W',
+            "ex" to 'X', "x" to 'X',
+            "why" to 'Y', "y" to 'Y',
+            "zee" to 'Z', "zed" to 'Z'
+        )
+    }
+
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var recognizer: SpeechRecognizer? = null
+    private val wordToLetter: Map<String, Char> = LETTER_WORDS.toMap()
+    private val grammarJson: String = buildGrammar()
+    private val lastHeardAt = ConcurrentHashMap<Char, Long>()
+
+    private var model: Model? = null
+    private var recognizer: Recognizer? = null
+    private var audioRecord: AudioRecord? = null
+    private var audioThread: Thread? = null
+
+    @Volatile
     private var listening = false
-    private var consecutiveErrors = 0
+    private var pendingStart = false
+    private var modelReady = false
     private var unavailableReported = false
 
-    private val noServiceMessage =
-        "本机没有可用的系统语音服务，已切换为「点字模式」：直接点中掉落的字母也能消除。"
+    /** 模型已就绪且未被降级 */
+    val isAvailable: Boolean get() = modelReady && !unavailableReported
+    val isUnavailable: Boolean get() = unavailableReported
 
-    /** 英文字母常见读音 / 音译词 -> 字母，提升识别命中率 */
-    private val spokenNames = mapOf(
-        "AY" to 'A', "BEE" to 'B', "BE" to 'B', "SEE" to 'C', "SEA" to 'C',
-        "DEE" to 'D', "EE" to 'E', "EF" to 'F', "GEE" to 'G', "JEE" to 'G',
-        "AITCH" to 'H', "EYE" to 'I', "JAY" to 'J', "KAY" to 'K', "EL" to 'L',
-        "EM" to 'M', "EN" to 'N', "OH" to 'O', "PEE" to 'P', "CUE" to 'Q',
-        "ARE" to 'R', "ESS" to 'S', "TEE" to 'T', "YOU" to 'U', "VEE" to 'V',
-        "DOUBLEU" to 'W', "EX" to 'X', "WHY" to 'Y', "ZEE" to 'Z', "ZED" to 'Z'
-    )
-
-    private val recognitionListener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
-        override fun onError(error: Int) {
-            // “没听清 / 超时”是正常现象，不算服务故障
-            if (error == SpeechRecognizer.ERROR_NO_MATCH ||
-                error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
-            ) {
-                consecutiveErrors = 0
-                scheduleRestart()
-                return
-            }
-            consecutiveErrors++
-            if (consecutiveErrors >= 3) {
-                markUnavailable("语音服务连续出错，$noServiceMessage")
-            } else {
-                scheduleRestart()
-            }
-        }
-        override fun onResults(results: Bundle?) {
-            consecutiveErrors = 0
-            handleResults(results)
-            scheduleRestart()
-        }
-        override fun onPartialResults(partialResults: Bundle?) {
-            handleResults(partialResults)
-        }
-        override fun onEvent(eventType: Int, params: Bundle?) {}
+    private fun buildGrammar(): String {
+        val arr = JSONArray()
+        for ((word, _) in LETTER_WORDS) arr.put(word)
+        for (c in 'a'..'z') arr.put(c.toString())
+        arr.put("[unk]")   // 词表外的声音走 unk，避免硬套成某个字母
+        return arr.toString()
     }
 
-    init {
-        recognizer = createBestRecognizer()
-        if (recognizer == null) markUnavailable(noServiceMessage)
+    /** 短期去重：partial 与 final 结果可能反复命中同一个字母 */
+    private fun emit(ch: Char) {
+        val now = System.currentTimeMillis()
+        val last = lastHeardAt[ch] ?: 0L
+        if (now - last < DEDUP_MS) return
+        lastHeardAt[ch] = now
+        mainHandler.post { onLetterHeard(ch) }
     }
 
-    /** 当前是否有可用的语音识别服务 */
-    val isAvailable: Boolean get() = recognizer != null && !unavailableReported
-
-    @SuppressLint("NewApi")
-    private fun createBestRecognizer(): SpeechRecognizer? {
-        // 1) 在线识别（Google 语音服务等），对英文字母名识别最准
+    /** 异步解压模型；首次启动约需数秒，完成后回调 onReady */
+    fun prepare() {
         try {
-            if (SpeechRecognizer.isRecognitionAvailable(context)) {
-                return SpeechRecognizer.createSpeechRecognizer(context)
-                    ?.also { it.setRecognitionListener(recognitionListener) }
-            }
-        } catch (ignored: Throwable) {
-        }
-        // 2) Android 12+ 端侧离线识别（部分机型自带，不依赖 Google 服务）
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                SpeechRecognizer.isOnDeviceRecognitionAvailable(context)
-            ) {
-                return SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-                    ?.also { it.setRecognitionListener(recognitionListener) }
-            }
-        } catch (ignored: Throwable) {
-        }
-        return null
-    }
-
-    /** 主动停用语音（例如用户拒绝麦克风权限），走降级流程 */
-    fun disable(reason: String = noServiceMessage) = markUnavailable(reason)
-
-    private fun markUnavailable(msg: String) {
-        if (unavailableReported) return
-        unavailableReported = true
-        listening = false
-        mainHandler.removeCallbacksAndMessages(null)
-        try {
-            recognizer?.destroy()
-        } catch (ignored: Throwable) {
-        }
-        recognizer = null
-        onUnavailable(msg)
-    }
-
-    /** 把识别结果里的字母读音提取出来，回调给游戏 */
-    private fun handleResults(results: Bundle?) {
-        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: return
-        for (text in matches) {
-            val tokens = text.uppercase(Locale.US).split(" ", "\n", "\t", ".", ",", "?", "!")
-            for (token in tokens) {
-                if (token.isEmpty()) continue
-                // 1) 单个字母（最常见）
-                if (token.length == 1 && token[0] in 'A'..'Z') {
-                    onLetterHeard(token[0])
-                    continue
+            StorageService.unpack(
+                context, "model", "model",
+                object : StorageService.Callback<Model> {
+                    override fun onComplete(result: Model) {
+                        model = result
+                        modelReady = true
+                        onReady()
+                        if (pendingStart) {
+                            pendingStart = false
+                            start()
+                        }
+                    }
+                },
+                object : StorageService.Callback<IOException> {
+                    override fun onComplete(result: IOException) {
+                        markUnavailable("离线语音模型加载失败：${result.message}")
+                    }
                 }
-                // 2) 字母读音 / 音译词（bee、see、zed …）
-                spokenNames[token]?.let { onLetterHeard(it) }
-            }
-        }
-    }
-
-    private fun buildIntent(): Intent {
-        return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+            )
+        } catch (t: Throwable) {
+            markUnavailable("离线语音初始化失败：${t.message}")
         }
     }
 
     fun start() {
-        if (!isAvailable) return
-        listening = true
-        consecutiveErrors = 0
+        if (unavailableReported) return
+        if (!modelReady) {
+            pendingStart = true   // 模型还在解压，就绪后自动开始
+            return
+        }
+        if (listening) return
+        lastHeardAt.clear()
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            onError("尚未获得麦克风权限")
+            return
+        }
         try {
-            recognizer?.startListening(buildIntent())
-        } catch (e: Throwable) {
-            onError(e.message ?: "启动语音识别失败")
+            val m = model ?: throw IOException("模型未就绪")
+
+            // 优先使用受限 grammar；不支持时回退默认语言模型
+            val rec = try {
+                Recognizer(m, SAMPLE_RATE.toFloat(), grammarJson)
+            } catch (ignored: Throwable) {
+                Recognizer(m, SAMPLE_RATE.toFloat())
+            }
+            recognizer = rec
+
+            val minBuf = AudioRecord.getMinBufferSize(
+                SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+            )
+            val bufSize = maxOf(minBuf, 4096)
+            val ar = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufSize
+            )
+            if (ar.state != AudioRecord.STATE_INITIALIZED) {
+                throw IOException("麦克风初始化失败")
+            }
+            audioRecord = ar
+            listening = true
+            ar.startRecording()
+            audioThread = Thread { listenLoop(rec, ar) }.also { it.start() }
+        } catch (t: Throwable) {
+            markUnavailable("无法启动离线语音识别：${t.message}")
         }
     }
 
-    /** 识别中断后自动重启，形成连续监听 */
-    private fun scheduleRestart() {
-        if (!listening || !isAvailable) return
-        mainHandler.postDelayed({
-            if (!listening || !isAvailable) return@postDelayed
+    private fun listenLoop(rec: Recognizer, ar: AudioRecord) {
+        val buffer = ShortArray(2048)
+        while (listening) {
+            val n = ar.read(buffer, 0, buffer.size)
+            if (n <= 0) continue
             try {
-                recognizer?.startListening(buildIntent())
-            } catch (e: Throwable) {
-                onError(e.message ?: "重启语音识别失败")
+                if (rec.acceptWaveForm(buffer, n)) {
+                    handleJson(rec.result)
+                    rec.reset()          // 重置后继续听下一个字母
+                } else {
+                    handleJson(rec.partialResult)
+                }
+            } catch (t: Throwable) {
+                mainHandler.post { onError(t.message ?: "识别异常") }
             }
-        }, 500)
+        }
+    }
+
+    /** 解析 Vosk 的 {"text": ...} / {"partial": ...}，映射成字母 */
+    private fun handleJson(json: String) {
+        if (json.isBlank()) return
+        val text = try {
+            val o = JSONObject(json)
+            val t = o.optString("text", "")
+            if (t.isNotEmpty()) t else o.optString("partial", "")
+        } catch (ignored: Throwable) {
+            return
+        }.trim().lowercase()
+
+        if (text.isEmpty() || text == "[unk]") return
+
+        // 多词读音优先处理
+        if (text.startsWith("double u")) {
+            emit('W')
+            return
+        }
+
+        val found = ArrayList<Char>()
+        for (token in text.split(Regex("\\s+"))) {
+            val mapped = wordToLetter[token]
+            if (mapped != null) {
+                found.add(mapped)
+            } else if (token.length == 1 && token[0] in 'a'..'z') {
+                found.add(token[0].uppercaseChar())
+            }
+        }
+        for (ch in found) emit(ch)
     }
 
     fun stop() {
         listening = false
-        mainHandler.removeCallbacksAndMessages(null)
+        pendingStart = false
         try {
-            recognizer?.stopListening()
+            audioRecord?.stop()
         } catch (ignored: Throwable) {
         }
+        try {
+            audioThread?.join(500)
+        } catch (ignored: InterruptedException) {
+        }
+        audioThread = null
+        try {
+            audioRecord?.release()
+        } catch (ignored: Throwable) {
+        }
+        audioRecord = null
+        try {
+            recognizer?.close()
+        } catch (ignored: Throwable) {
+        }
+        recognizer = null
+    }
+
+    /** 主动停用语音（例如用户拒绝麦克风权限） */
+    fun disable(reason: String) = markUnavailable(reason)
+
+    private fun markUnavailable(msg: String) {
+        if (unavailableReported) return
+        unavailableReported = true
+        stop()
+        mainHandler.post { onUnavailable(msg) }
     }
 
     fun destroy() {
         stop()
         try {
-            recognizer?.destroy()
+            model?.close()
         } catch (ignored: Throwable) {
         }
-        recognizer = null
+        model = null
+        modelReady = false
     }
 }

@@ -1,11 +1,16 @@
 package com.example.letterdrop
 
 import android.Manifest
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Bundle
 import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -17,9 +22,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var livesText: TextView
     private lateinit var statusText: TextView
     private lateinit var startButton: Button
+    private lateinit var settingsButton: Button
     private lateinit var speechManager: SpeechManager
+    private lateinit var prefs: SharedPreferences
 
-    private var speechAvailable = false
+    private var modelReady = false
+    private var voiceDisabled = false
+    private var inGame = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,54 +39,119 @@ class MainActivity : AppCompatActivity() {
         livesText = findViewById(R.id.livesText)
         statusText = findViewById(R.id.statusText)
         startButton = findViewById(R.id.startButton)
+        settingsButton = findViewById(R.id.settingsButton)
+
+        prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE)
+        applySpeed(prefs.getInt(KEY_SPEED, GameView.DEFAULT_LEVEL))
 
         speechManager = SpeechManager(
             this,
             onLetterHeard = { ch -> gameView.onLetterHeard(ch) },
-            // 临时错误不打扰用户；真正的服务不可用由 onUnavailable 处理
+            // 临时识别错误不打扰用户；真正不可用由 onUnavailable 处理
             onError = { },
             onUnavailable = { msg ->
-                speechAvailable = false
-                statusText.text = "点字模式：点中掉落的字母即可消除"
+                voiceDisabled = true
+                refreshStatus()
                 Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            },
+            onReady = {
+                modelReady = true
+                refreshStatus()
             }
         )
-        speechAvailable = speechManager.isAvailable
 
-        if (!speechAvailable) {
-            statusText.text = "点字模式：点中掉落的字母即可消除"
-        }
-
-        // 游戏状态变化 -> 刷新顶部 UI
         gameView.onStateChanged {
             scoreText.text = "得分: ${gameView.score}"
             livesText.text = "生命: " + "❤".repeat(gameView.lives)
             if (gameView.gameOver) {
-                statusText.text = "游戏结束！点击重新开始"
                 startButton.text = "重新开始"
+                inGame = false
                 speechManager.stop()
             }
+            refreshStatus()
         }
 
+        settingsButton.setOnClickListener { showSettingsDialog() }
+
         startButton.setOnClickListener {
-            // 没有语音服务时不需要麦克风权限，直接进点字模式
-            if (speechManager.isAvailable && !hasRecordPermission()) {
+            // 语音已降级时无需麦克风权限，直接进点字模式
+            if (!voiceDisabled && !hasRecordPermission()) {
                 requestRecordPermission()
                 return@setOnClickListener
             }
             startGame()
         }
+
+        refreshStatus()
+        speechManager.prepare()
+    }
+
+    /** 设置菜单：10 档掉落速度，选择后立即生效并自动保存 */
+    private fun showSettingsDialog() {
+        val wasPaused = gameView.paused
+        gameView.paused = true
+
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val label = TextView(this).apply {
+            textSize = 16f
+            setTextColor(Color.WHITE)
+        }
+        val seek = SeekBar(this).apply {
+            max = 9
+            progress = (gameView.speedLevel - 1).coerceIn(0, 9)
+        }
+        fun updateLabel(level: Int) {
+            label.text = "掉落速度：第 $level 档\n1 档最慢，10 档最快；选择后立即生效并自动保存"
+        }
+        updateLabel(gameView.speedLevel)
+
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                updateLabel(value + 1)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+
+        container.addView(label)
+        container.addView(seek)
+
+        AlertDialog.Builder(this)
+            .setTitle("设置")
+            .setView(container)
+            .setPositiveButton("保存") { _, _ -> applySpeed(seek.progress + 1) }
+            .setNegativeButton("取消", null)
+            .setOnDismissListener { gameView.paused = wasPaused }
+            .show()
+    }
+
+    private fun applySpeed(level: Int) {
+        val lv = level.coerceIn(1, 10)
+        prefs.edit().putInt(KEY_SPEED, lv).apply()
+        gameView.setSpeedLevel(lv)
+        settingsButton.text = "设置 · ${lv}档"
     }
 
     private fun startGame() {
+        inGame = true
         gameView.startGame()
-        statusText.text = if (speechManager.isAvailable) {
-            "念出字母（或点中字母）即可消除"
-        } else {
-            "点字模式：点中掉落的字母即可消除"
-        }
         startButton.text = "游戏中..."
-        if (speechManager.isAvailable) speechManager.start()
+        speechManager.start()
+        refreshStatus()
+    }
+
+    private fun refreshStatus() {
+        statusText.text = when {
+            gameView.gameOver -> "游戏结束！点击重新开始"
+            voiceDisabled -> "点字模式：点中掉落的字母即可消除"
+            !modelReady -> "正在准备离线语音模型（首次启动约需几秒）…"
+            inGame -> "念出字母（或点中字母）即可消除"
+            else -> "点击开始，念出或点中掉落的字母"
+        }
     }
 
     private fun hasRecordPermission(): Boolean =
@@ -115,6 +189,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val PREF_NAME = "letterdrop_settings"
+        private const val KEY_SPEED = "speed_level"
         private const val REQUEST_RECORD = 100
     }
 }

@@ -1,0 +1,12 @@
+# Gradle / IDE
+.gradle/
+.idea/
+*.iml
+local.properties
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 注意：app/src/main/assets/model 是 Vosk 离线模型，必须入库，勿忽略

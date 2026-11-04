@@ -13,6 +13,11 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
+
+        // Vosk 自带这 4 种 ABI 的 native 库
+        ndk {
+            abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+        }
     }
 
     buildTypes {
@@ -35,4 +40,8 @@ dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    // Vosk 离线语音识别（Apache-2.0）+ JNA
+    implementation 'net.java.dev.jna:jna:5.18.1@aar'
+    implementation 'com.alphacephei:vosk-android:0.3.75@aar'
 }

@@ -1,23 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 麦克风录音权限：用于接收用户读音 -->
+    <!-- Vosk 离线识别需要麦克风；不需要联网、不依赖 Google 语音服务 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <!-- 语音识别依赖网络（Google 语音识别服务） -->
-    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- 麦克风不是必需硬件，没有麦克风的设备也能安装（走点字模式） -->
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
-
-    <!--
-      Android 11(API 30) 起的「包可见性」限制：必须显式声明要查询语音识别服务，
-      否则 SpeechRecognizer.isRecognitionAvailable() 会误报 false。
-    -->
-    <queries>
-        <intent>
-            <action android:name="android.speech.RecognitionService" />
-        </intent>
-    </queries>
 
     <application
         android:allowBackup="true"
