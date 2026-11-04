@@ -30,6 +30,19 @@
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <!-- 速度档：位于得分下方，随得分自动提升 -->
+    <TextView
+        android:id="@+id/speedText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="速度档: 5档"
+        android:textColor="#F39C12"
+        android:textSize="15sp"
+        android:layout_marginStart="14dp"
+        android:layout_marginTop="2dp"
+        app:layout_constraintTop_toBottomOf="@id/scoreText"
+        app:layout_constraintStart_toStartOf="parent" />
+
     <!-- 游戏画布（铺满全屏，字母在此掉落） -->
     <com.example.letterdrop.GameView
         android:id="@+id/gameView"
@@ -39,24 +52,6 @@
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
-
-    <!-- 设置入口：声明在 gameView 之后，保证位于上层可点击 -->
-    <Button
-        android:id="@+id/settingsButton"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="设置"
-        android:textSize="14sp"
-        android:minWidth="0dp"
-        android:minHeight="0dp"
-        android:paddingStart="14dp"
-        android:paddingEnd="14dp"
-        android:paddingTop="6dp"
-        android:paddingBottom="6dp"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent"
-        android:layout_marginTop="10dp" />
 
     <!-- 提示文字 -->
     <TextView

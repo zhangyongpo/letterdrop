@@ -20,7 +20,7 @@ import kotlin.math.min
  * 1. 定时在顶部随机生成大写/小写字母并向下掉落；
  * 2. 念对字母（Vosk 离线识别）或点中字母 -> 消失动画；
  * 3. 落到地面 -> 扣一条命，命数为 0 时游戏结束；
- * 4. 掉落速度可在设置菜单里配置（1~10 档），并保存在 SharedPreferences。
+ * 4. 掉落速度随得分自动提升：基础为第 5 档，每累计 30 分升 1 档，无上限。
  */
 class GameView @JvmOverloads constructor(
     context: Context,
@@ -43,8 +43,8 @@ class GameView @JvmOverloads constructor(
 
     private var lastSpawn = 0L
     private var spawnInterval = 1500L   // 生成间隔(ms)，随时间缩短
-    private var fallSpeed = DEFAULT_SPEED  // 当前下落速度(px/ms)
-    private var baseFallSpeed = DEFAULT_SPEED
+    private var fallSpeed = BASE_FALL_SPEED  // 当前下落速度(px/ms)
+    private var baseFallSpeed = BASE_FALL_SPEED
 
     var score = 0
         private set
@@ -53,8 +53,8 @@ class GameView @JvmOverloads constructor(
     var gameOver = false
         private set
 
-    /** 当前速度档位 1~10 */
-    var speedLevel = DEFAULT_LEVEL
+    /** 当前速度档位，基础为 5 档，随得分提升，无上限 */
+    var speedLevel = BASE_LEVEL
         private set
 
     /** 打开设置弹窗时暂停，避免弹窗期间字母落地扣命 */
@@ -89,21 +89,14 @@ class GameView @JvmOverloads constructor(
         mainHandler.post { stateListeners.forEach { it() } }
     }
 
-    /** 设置掉落速度档位（1 最慢，10 最快），立即生效 */
-    fun setSpeedLevel(level: Int) {
-        speedLevel = level.coerceIn(1, 10)
-        baseFallSpeed = speedForLevel(speedLevel)
-        synchronized(lock) {
-            fallSpeed = baseFallSpeed
-        }
-    }
-
     fun startGame() {
         synchronized(lock) {
             letters.clear()
-            fallSpeed = baseFallSpeed
+            score = 0
+            speedLevel = BASE_LEVEL
+            baseFallSpeed = BASE_FALL_SPEED
+            fallSpeed = BASE_FALL_SPEED
         }
-        score = 0
         lives = 3
         gameOver = false
         spawnInterval = 1500L
@@ -149,12 +142,11 @@ class GameView @JvmOverloads constructor(
         if (gameOver || paused) return
 
         synchronized(lock) {
-            // 生成新字母，并逐步提升难度
+            // 生成新字母；生成间隔随时间缩短以提升密度（速度本身由得分档位决定）
             if (now - lastSpawn > spawnInterval) {
                 spawnLetter()
                 lastSpawn = now
                 spawnInterval = (spawnInterval * 0.98f).toLong().coerceAtLeast(600L)
-                fallSpeed = (fallSpeed * 1.01f).coerceAtMost(baseFallSpeed * 2.5f)
             }
 
             val dy = fallSpeed * dt
@@ -166,7 +158,7 @@ class GameView @JvmOverloads constructor(
                     l.radius *= 0.82f
                     if (l.radius < 2f) {
                         iterator.remove()
-                        score += 1
+                        bumpScore()
                         notifyState()
                     }
                     continue
@@ -184,6 +176,15 @@ class GameView @JvmOverloads constructor(
                 }
             }
         }
+    }
+
+    /** 答对一个字母：得分 +1，并依据得分重新计算速度档位（每 30 分升 1 档，无上限） */
+    private fun bumpScore() {
+        score += 1
+        val level = BASE_LEVEL + score / 30
+        speedLevel = level
+        baseFallSpeed = speedForLevel(level)
+        fallSpeed = baseFallSpeed
     }
 
     private fun spawnLetter() {
@@ -247,13 +248,19 @@ class GameView @JvmOverloads constructor(
     }
 
     companion object {
-        const val DEFAULT_LEVEL = 5
+        /** 基础速度档位：最低速即原第 5 档 */
+        const val BASE_LEVEL = 5
         private const val MIN_SPEED = 0.06f
         private const val MAX_SPEED = 0.40f
-        private val DEFAULT_SPEED = speedForLevel(DEFAULT_LEVEL)
+        private val BASE_FALL_SPEED = speedForLevel(BASE_LEVEL)
 
-        /** 档位 1~10 -> 下落速度 px/ms */
-        fun speedForLevel(level: Int): Float =
-            MIN_SPEED + (level.coerceIn(1, 10) - 1) * (MAX_SPEED - MIN_SPEED) / 9f
+        /**
+         * 档位 -> 下落速度 px/ms。
+         * 第 5 档(基础)约 0.211，每升 1 档约 +0.038；档位无上限，速度随之线性增长。
+         */
+        fun speedForLevel(level: Int): Float {
+            val l = (level - 1).coerceAtLeast(0)
+            return MIN_SPEED + l * (MAX_SPEED - MIN_SPEED) / 9f
+        }
     }
 }
