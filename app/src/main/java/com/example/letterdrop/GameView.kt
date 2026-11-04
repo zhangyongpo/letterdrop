@@ -53,6 +53,9 @@ class GameView @JvmOverloads constructor(
     var gameOver = false
         private set
 
+    /** 是否已开始：未开始时主页面只显示静态背景，不生成/掉落字母 */
+    private var started = false
+
     /** 当前速度档位，基础为 5 档，随得分提升，无上限 */
     var speedLevel = BASE_LEVEL
         private set
@@ -96,6 +99,7 @@ class GameView @JvmOverloads constructor(
             speedLevel = BASE_LEVEL
             baseFallSpeed = BASE_FALL_SPEED
             fallSpeed = BASE_FALL_SPEED
+            started = true
         }
         lives = 3
         gameOver = false
@@ -139,7 +143,7 @@ class GameView @JvmOverloads constructor(
     }
 
     private fun update(dt: Long, now: Long) {
-        if (gameOver || paused) return
+        if (!started || gameOver || paused) return
 
         synchronized(lock) {
             // 生成新字母；生成间隔随时间缩短以提升密度（速度本身由得分档位决定）

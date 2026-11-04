@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.view.View
 import android.view.animation.OvershootInterpolator
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -15,6 +16,7 @@ import androidx.core.content.ContextCompat
 class MainActivity : AppCompatActivity() {
 
     private lateinit var gameView: GameView
+    private lateinit var bgImage: ImageView
     private lateinit var scoreText: TextView
     private lateinit var livesText: TextView
     private lateinit var speedText: TextView
@@ -39,6 +41,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         gameView = findViewById(R.id.gameView)
+        bgImage = findViewById(R.id.bgImage)
         scoreText = findViewById(R.id.scoreText)
         livesText = findViewById(R.id.livesText)
         speedText = findViewById(R.id.speedText)
@@ -146,6 +149,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun startGame() {
         inGame = true
+        bgImage.visibility = View.GONE
+        // 进入游戏：显示顶部 HUD（得分/生命/速度档），隐藏交给游戏画布
+        scoreText.visibility = View.VISIBLE
+        livesText.visibility = View.VISIBLE
+        speedText.visibility = View.VISIBLE
         gameView.startGame()
         startButton.text = "游戏中..."
         speechManager.start()

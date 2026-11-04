@@ -6,7 +6,31 @@
     android:layout_height="match_parent"
     android:background="#1B1F2A">
 
-    <!-- 得分（顶部实时显示，加分时有弹动动画） -->
+    <!-- 主页面静态背景图片：声明在最前，位于最底层（仍盖住游戏画布），
+         游戏开始时隐藏以露出掉落字母；顶部 HUD 声明在其后，始终位于其上 -->
+    <ImageView
+        android:id="@+id/bgImage"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:src="@drawable/bg_main"
+        android:scaleType="centerCrop"
+        android:contentDescription="主页面背景"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- 游戏画布（铺满全屏，字母在此掉落；SurfaceView 默认位于普通 View 之下） -->
+    <com.example.letterdrop.GameView
+        android:id="@+id/gameView"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <!-- 得分（顶部实时显示，加分时有弹动动画；主页面隐藏，开始后显示） -->
     <TextView
         android:id="@+id/scoreText"
         android:layout_width="wrap_content"
@@ -16,6 +40,7 @@
         android:textSize="24sp"
         android:textStyle="bold"
         android:layout_margin="14dp"
+        android:visibility="gone"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintStart_toStartOf="parent" />
 
@@ -28,6 +53,7 @@
         android:textColor="#FF6B6B"
         android:textSize="18sp"
         android:layout_margin="14dp"
+        android:visibility="gone"
         app:layout_constraintTop_toTopOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
@@ -41,18 +67,9 @@
         android:textSize="15sp"
         android:layout_marginStart="14dp"
         android:layout_marginTop="2dp"
+        android:visibility="gone"
         app:layout_constraintTop_toBottomOf="@id/scoreText"
         app:layout_constraintStart_toStartOf="parent" />
-
-    <!-- 游戏画布（铺满全屏，字母在此掉落） -->
-    <com.example.letterdrop.GameView
-        android:id="@+id/gameView"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
 
     <!-- 提示文字 -->
     <TextView
