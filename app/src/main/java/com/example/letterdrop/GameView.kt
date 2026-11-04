@@ -1,5 +1,6 @@
 package com.example.letterdrop
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
@@ -7,6 +8,7 @@ import android.graphics.Paint
 import android.os.Handler
 import android.os.Looper
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import java.util.Random
@@ -15,9 +17,9 @@ import kotlin.math.min
 /**
  * 游戏画布：自绘 SurfaceView + 游戏线程。
  *
- * 职责：
  * 1. 定时在顶部随机生成大写/小写字母并向下掉落；
  * 2. 通过麦克风念对字母 -> onLetterHeard 触发“消失动画”；
+ *    无语音服务时也可直接点中字母消除（点字模式，保底玩法）；
  * 3. 字母落到地面 -> 扣一条命，命数为 0 时游戏结束。
  */
 class GameView @JvmOverloads constructor(
@@ -49,6 +51,9 @@ class GameView @JvmOverloads constructor(
         private set
     var gameOver = false
         private set
+
+    /** 是否允许点中字母消除（默认开启，作为无语音服务时的保底玩法） */
+    var touchEnabled = true
 
     private val stateListeners = mutableListOf<() -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -139,7 +144,7 @@ class GameView @JvmOverloads constructor(
             while (iterator.hasNext()) {
                 val l = iterator.next()
                 if (l.popping) {
-                    // 被念对：缩小直到消失
+                    // 被念对 / 被点中：缩小直到消失
                     l.radius *= 0.82f
                     if (l.radius < 2f) {
                         iterator.remove()
@@ -176,6 +181,29 @@ class GameView @JvmOverloads constructor(
         synchronized(lock) {
             val target = letters.firstOrNull { !it.popping && it.name == ch }
             target?.popping = true
+        }
+    }
+
+    /** 点字模式：点中字母即消除，优先消掉最靠近地面的那个 */
+    @SuppressLint("ClickableViewAccessibility")
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (touchEnabled && !gameOver && event.actionMasked == MotionEvent.ACTION_DOWN) {
+            if (popLetterAt(event.x, event.y)) return true
+        }
+        return super.onTouchEvent(event)
+    }
+
+    private fun popLetterAt(x: Float, y: Float): Boolean {
+        synchronized(lock) {
+            // 热区略大于圆圈，手机上更好点
+            val target = letters.filter { l ->
+                if (l.popping) return@filter false
+                val dx = l.x - x
+                val dy = l.y - y
+                dx * dx + dy * dy <= l.radius * l.radius * 1.7f
+            }.maxByOrNull { it.y }
+            target?.popping = true
+            return target != null
         }
     }
 

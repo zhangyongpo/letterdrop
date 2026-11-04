@@ -19,6 +19,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var startButton: Button
     private lateinit var speechManager: SpeechManager
 
+    private var speechAvailable = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -32,10 +34,19 @@ class MainActivity : AppCompatActivity() {
         speechManager = SpeechManager(
             this,
             onLetterHeard = { ch -> gameView.onLetterHeard(ch) },
-            onError = { msg ->
+            // 临时错误不打扰用户；真正的服务不可用由 onUnavailable 处理
+            onError = { },
+            onUnavailable = { msg ->
+                speechAvailable = false
+                statusText.text = "点字模式：点中掉落的字母即可消除"
                 Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
             }
         )
+        speechAvailable = speechManager.isAvailable
+
+        if (!speechAvailable) {
+            statusText.text = "点字模式：点中掉落的字母即可消除"
+        }
 
         // 游戏状态变化 -> 刷新顶部 UI
         gameView.onStateChanged {
@@ -49,7 +60,8 @@ class MainActivity : AppCompatActivity() {
         }
 
         startButton.setOnClickListener {
-            if (!hasRecordPermission()) {
+            // 没有语音服务时不需要麦克风权限，直接进点字模式
+            if (speechManager.isAvailable && !hasRecordPermission()) {
                 requestRecordPermission()
                 return@setOnClickListener
             }
@@ -59,9 +71,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun startGame() {
         gameView.startGame()
-        statusText.text = "说出掉落的字母！"
+        statusText.text = if (speechManager.isAvailable) {
+            "念出字母（或点中字母）即可消除"
+        } else {
+            "点字模式：点中掉落的字母即可消除"
+        }
         startButton.text = "游戏中..."
-        speechManager.start()
+        if (speechManager.isAvailable) speechManager.start()
     }
 
     private fun hasRecordPermission(): Boolean =
@@ -82,12 +98,14 @@ class MainActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_RECORD &&
-            grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
-        ) {
-            startGame()
-        } else {
-            Toast.makeText(this, "需要麦克风权限才能识别读音", Toast.LENGTH_SHORT).show()
+        if (requestCode == REQUEST_RECORD) {
+            if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+                startGame()
+            } else {
+                // 拒绝权限也照样能玩，降级到点字模式
+                speechManager.disable("未授予麦克风权限，已切换为「点字模式」：点中字母即可消除。")
+                startGame()
+            }
         }
     }
 
