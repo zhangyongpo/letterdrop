@@ -141,7 +141,7 @@ class MainActivity : AppCompatActivity() {
         gameOverCard.animate()
             .scaleX(1f).scaleY(1f)
             .setDuration(320)
-            .setInterpolator(OvershootInterpolator(1.4))
+            .setInterpolator(OvershootInterpolator(1.4f))
     }
 
     private fun startGame() {
