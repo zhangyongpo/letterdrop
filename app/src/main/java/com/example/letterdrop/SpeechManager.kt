@@ -39,7 +39,7 @@ class SpeechManager(
 
     /** 英文字母常见读音 / 音译词 -> 字母，提升识别命中率 */
     private val spokenNames = mapOf(
-        "AY" to 'A', "BEE" to 'B', "BE" to 'B', "SEE" to 'C', "SEA" to 'C",
+        "AY" to 'A', "BEE" to 'B', "BE" to 'B', "SEE" to 'C', "SEA" to 'C',
         "DEE" to 'D', "EE" to 'E', "EF" to 'F', "GEE" to 'G', "JEE" to 'G',
         "AITCH" to 'H', "EYE" to 'I', "JAY" to 'J', "KAY" to 'K', "EL" to 'L',
         "EM" to 'M', "EN" to 'N', "OH" to 'O', "PEE" to 'P', "CUE" to 'Q',
