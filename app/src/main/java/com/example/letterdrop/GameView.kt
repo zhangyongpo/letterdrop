@@ -20,7 +20,7 @@ import kotlin.math.min
  * 1. 定时在顶部随机生成大写/小写字母并向下掉落；
  * 2. 念对字母（Vosk 离线识别）或点中字母 -> 消失动画；
  * 3. 落到地面 -> 扣一条命，命数为 0 时游戏结束；
- * 4. 掉落速度随得分自动提升：基础为第 5 档，每累计 20 分升 1 档，无上限。
+ * 4. 掉落速度随得分自动提升：基础为第 2 档，每累计 20 分升 1 档，无上限。
  */
 class GameView @JvmOverloads constructor(
     context: Context,
@@ -56,7 +56,7 @@ class GameView @JvmOverloads constructor(
     /** 是否已开始：未开始时主页面只显示静态背景，不生成/掉落字母 */
     private var started = false
 
-    /** 当前速度档位，基础为 5 档，随得分提升，无上限 */
+    /** 当前速度档位，基础为 2 档，随得分提升，无上限 */
     var speedLevel = BASE_LEVEL
         private set
 
@@ -252,15 +252,15 @@ class GameView @JvmOverloads constructor(
     }
 
     companion object {
-        /** 基础速度档位：最低速即原第 5 档 */
-        const val BASE_LEVEL = 5
+        /** 基础速度档位：最低速即原第 2 档 */
+        const val BASE_LEVEL = 2
         private const val MIN_SPEED = 0.06f
         private const val MAX_SPEED = 0.40f
         private val BASE_FALL_SPEED = speedForLevel(BASE_LEVEL)
 
         /**
          * 档位 -> 下落速度 px/ms。
-         * 第 5 档(基础)约 0.211，每升 1 档约 +0.038；每 20 分升 1 档，档位无上限，速度随之线性增长。
+         * 第 2 档(基础)约 0.098，每升 1 档约 +0.038；每 20 分升 1 档，档位无上限，速度随之线性增长。
          */
         fun speedForLevel(level: Int): Float {
             val l = (level - 1).coerceAtLeast(0)
