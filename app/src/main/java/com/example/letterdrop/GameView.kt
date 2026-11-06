@@ -42,7 +42,7 @@ class GameView @JvmOverloads constructor(
     private var radius = 40f
 
     private var lastSpawn = 0L
-    private var spawnInterval = 1500L   // 生成间隔(ms)，随时间缩短
+    private var spawnInterval = SPAWN_INTERVAL_MS   // 生成间隔(ms)，固定不变（字母出现数量稳定）
     private var fallSpeed = BASE_FALL_SPEED  // 当前下落速度(px/ms)
     private var baseFallSpeed = BASE_FALL_SPEED
 
@@ -103,7 +103,7 @@ class GameView @JvmOverloads constructor(
         }
         lives = 3
         gameOver = false
-        spawnInterval = 1500L
+        spawnInterval = SPAWN_INTERVAL_MS
         lastSpawn = System.currentTimeMillis()
         notifyState()
     }
@@ -146,11 +146,10 @@ class GameView @JvmOverloads constructor(
         if (!started || gameOver || paused) return
 
         synchronized(lock) {
-            // 生成新字母；生成间隔随时间缩短以提升密度（速度本身由得分档位决定）
+            // 生成新字母；生成间隔固定，保证字母"出现数量"稳定不随时间加快（下落速度由得分档位决定）
             if (now - lastSpawn > spawnInterval) {
                 spawnLetter()
                 lastSpawn = now
-                spawnInterval = (spawnInterval * 0.98f).toLong().coerceAtLeast(600L)
             }
 
             val dy = fallSpeed * dt
@@ -252,6 +251,8 @@ class GameView @JvmOverloads constructor(
     }
 
     companion object {
+        /** 字母生成间隔(ms)：固定不变，保证"出现数量"稳定、不随时间加快 */
+        private const val SPAWN_INTERVAL_MS = 1500L
         /** 基础速度档位：最低速即原第 2 档 */
         const val BASE_LEVEL = 2
         private const val MIN_SPEED = 0.06f
