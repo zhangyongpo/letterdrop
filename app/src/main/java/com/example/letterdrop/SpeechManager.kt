@@ -94,8 +94,8 @@ class SpeechManager(
     private var unavailableReported = false
 
     /**
-     * 播放标准读音期间挂起解码：录音线程继续读 PCM（不积压缓冲区），
-     * 但不把音频交给 Recognizer，避免 TTS 外放被自己识别后自动消除字母。
+     * 播放内置字母读音期间挂起解码：录音线程继续读 PCM（不积压缓冲区），
+     * 但不把音频交给 Recognizer，避免读音外放被自己识别后自动消除字母。
      */
     @Volatile
     private var recognitionSuspended = false
@@ -104,7 +104,7 @@ class SpeechManager(
     val isAvailable: Boolean get() = modelReady && !unavailableReported
     val isUnavailable: Boolean get() = unavailableReported
 
-    /** 由界面在 TTS 播放开始/结束时调用；幂等，可安全重复调用 */
+    /** 由界面在字母读音播放开始/结束时调用；幂等，可安全重复调用 */
     fun setRecognitionSuspended(value: Boolean) {
         recognitionSuspended = value
     }

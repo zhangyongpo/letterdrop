@@ -2,11 +2,10 @@ package com.example.letterdrop
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.view.View
 import android.view.animation.OvershootInterpolator
 import android.widget.Button
@@ -16,7 +15,6 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import java.util.Locale
 
 class MainActivity : AppCompatActivity() {
 
@@ -33,14 +31,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var bestScoreText: TextView
     private lateinit var speechManager: SpeechManager
 
-    /** 系统英文 TTS：点击字母时播放标准读音 */
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
-    private var utteranceSeq = 0
+    /** 当前点读播放器；每次点击新建，用完成回调精确恢复识别 */
+    private var letterPlayer: MediaPlayer? = null
+    private var playSeq = 0
 
-    /** 当前正在播放的读音 id，只认最后一次播放的完成回调 */
+    /** 当前生效的播放 id，0 表示空闲；只认最后一次播放的回调 */
     @Volatile
-    private var activeUtteranceId: String? = null
+    private var activePlayId = 0
     private val uiHandler = Handler(Looper.getMainLooper())
 
     private var modelReady = false
@@ -89,7 +86,7 @@ class MainActivity : AppCompatActivity() {
         )
 
         gameView.onStateChanged { onStateUpdated() }
-        // 点击字母只播放标准读音，由用户跟读麦克风完成消除与纠音
+        // 点击字母只播放内置读音，由用户跟读麦克风完成消除与纠音
         gameView.onLetterTapped { ch -> speakLetter(ch) }
 
         startButton.setOnClickListener {
@@ -106,62 +103,77 @@ class MainActivity : AppCompatActivity() {
             startGame()
         }
 
-        initTextToSpeech()
         refreshStatus()
         speechManager.prepare()
     }
 
-    /** 初始化系统英文 TTS，并监听播放结束以便恢复语音识别 */
-    private fun initTextToSpeech() {
-        tts = TextToSpeech(this) { status ->
-            val engine = tts
-            if (engine != null && status == TextToSpeech.SUCCESS) {
-                val result = engine.setLanguage(Locale.US)
-                ttsReady = result != TextToSpeech.LANG_MISSING_DATA &&
-                    result != TextToSpeech.LANG_NOT_SUPPORTED
-                if (ttsReady) engine.setSpeechRate(0.85f)   // 稍慢一点，方便听清并模仿
-                engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {}
-                    override fun onDone(utteranceId: String?) = finishUtterance(utteranceId)
-                    override fun onError(utteranceId: String?) = finishUtterance(utteranceId)
-                    override fun onError(utteranceId: String?, errorCode: Int) =
-                        finishUtterance(utteranceId)
-                    override fun onStop(utteranceId: String?, interrupted: Boolean) =
-                        finishUtterance(utteranceId)
-                })
-            }
-        }
-    }
-
     /**
-     * 点击字母：播放该字母的标准读音。
-     * 播放期间挂起离线识别，避免 TTS 外放被麦克风收进去后自己把字母「念」掉，
+     * 点击字母：播放 APK 内置的字母发音，不做任何实时合成。
+     * 音频来自 letterdrop-wx 主包 assets/audio/A~Z.mp3，已重命名为
+     * res/raw/letter_a~z.mp3（Android 资源名只能小写），为带 ID3 头的 MP3。
+     * 资源 id 用 R.raw 编译期常量直接引用，保证打包时不会被裁剪、也不会拼错名字。
+     *
+     * 播放期间挂起离线识别，避免内置读音外放被麦克风收进去后自己把字母「念」掉，
      * 保证消除只来自用户真正的跟读。
      */
     private fun speakLetter(ch: Char) {
-        val engine = tts
-        if (!ttsReady || engine == null) {
-            Toast.makeText(this, "系统英文语音暂不可用，无法播放读音", Toast.LENGTH_SHORT).show()
+        val index = ch.uppercaseChar() - 'A'
+        uiHandler.removeCallbacksAndMessages(null)   // 取消上一次的延迟恢复
+        releaseLetterPlayer()                        // 连点时先停上一条，避免叠音
+        activePlayId = 0
+
+        if (index !in 0..25) {
+            speechManager.setRecognitionSuspended(false)
             return
         }
-        uiHandler.removeCallbacksAndMessages(null)   // 取消上一次的延迟恢复
-        val id = "letter_${++utteranceSeq}"
-        activeUtteranceId = id
-        speechManager.setRecognitionSuspended(true)
-        val spoken = PRONUNCIATION[ch] ?: ch.toString()
-        if (engine.speak(spoken, TextToSpeech.QUEUE_FLUSH, null, id) != TextToSpeech.SUCCESS) {
-            activeUtteranceId = null
+        val player = try {
+            MediaPlayer.create(this, LETTER_RES_IDS[index])
+        } catch (ignored: Throwable) {
+            null
+        }
+        if (player == null) {
             speechManager.setRecognitionSuspended(false)
+            return
+        }
+
+        val id = ++playSeq
+        activePlayId = id
+        letterPlayer = player
+        speechManager.setRecognitionSuspended(true)
+
+        player.setOnCompletionListener { finishLetterPlayback(id) }
+        player.setOnErrorListener { _, _, _ ->
+            finishLetterPlayback(id)
+            true
+        }
+        try {
+            player.start()
+        } catch (ignored: Throwable) {
+            finishLetterPlayback(id)
         }
     }
 
-    /** 读音播完/失败/被打断后，稍等尾音散去再恢复识别（只认最后一次播放） */
-    private fun finishUtterance(utteranceId: String?) {
-        if (utteranceId == null || utteranceId != activeUtteranceId) return
-        activeUtteranceId = null
+    /** 读音播完/失败后，稍等尾音散去再恢复识别（只认最后一次播放） */
+    private fun finishLetterPlayback(id: Int) {
+        if (id != activePlayId) return
+        activePlayId = 0
+        releaseLetterPlayer()
         uiHandler.postDelayed({
-            if (activeUtteranceId == null) speechManager.setRecognitionSuspended(false)
-        }, TTS_RESUME_DELAY_MS)
+            if (activePlayId == 0) speechManager.setRecognitionSuspended(false)
+        }, PLAYBACK_RESUME_DELAY_MS)
+    }
+
+    private fun releaseLetterPlayer() {
+        letterPlayer?.let { p ->
+            p.setOnCompletionListener(null)
+            p.setOnErrorListener(null)
+            try {
+                if (p.isPlaying) p.stop()
+            } catch (ignored: Throwable) {
+            }
+            p.release()
+        }
+        letterPlayer = null
     }
 
     /** 统一刷新顶部状态 + 处理结束界面与加分动画 */
@@ -224,28 +236,34 @@ class MainActivity : AppCompatActivity() {
     private fun startGame() {
         inGame = true
         bgImage.visibility = View.GONE
-        // 每局按语音可用性决定模式，并清掉上一局可能残留的挂起状态
-        activeUtteranceId = null
+        // 每局按语音可用性决定模式，并清掉上一局可能残留的读音/挂起状态
+        releaseLetterPlayer()
+        activePlayId = 0
         uiHandler.removeCallbacksAndMessages(null)
         speechManager.setRecognitionSuspended(false)
         gameView.practiceMode = voiceDisabled || !modelReady
         // 进入游戏：显示顶部 HUD（得分/生命/速度档），隐藏交给游戏画布
-        scoreText.visibility = View.VISIBLE
-        livesText.visibility = View.VISIBLE
-        speedText.visibility = View.VISIBLE
+        scoreViewVisible(true)
         gameView.startGame()
         startButton.text = "游戏中..."
         speechManager.start()
         refreshStatus()
     }
 
+    private fun scoreViewVisible(visible: Boolean) {
+        val v = if (visible) View.VISIBLE else View.GONE
+        scoreText.visibility = v
+        livesText.visibility = v
+        speedText.visibility = v
+    }
+
     private fun refreshStatus() {
         statusText.text = when {
             gameView.gameOver -> "游戏结束！点击「再玩一次」"
-            voiceDisabled -> "听音练习：点字母听标准读音（麦克风不可用，不计分）"
+            voiceDisabled -> "听音练习：点字母听读音（麦克风不可用，不计分）"
             !modelReady -> "正在准备离线语音模型（可先点字母听读音）…"
             inGame -> "念出字母消除 · 点字母听读音，跟读纠正发音"
-            else -> "点击开始，念出字母消除；点字母可听标准读音"
+            else -> "点击开始，念出字母消除；点字母可听读音"
         }
     }
 
@@ -281,8 +299,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         // 切后台停止读音，并确保识别不会因回调丢失而一直挂起
-        tts?.stop()
-        activeUtteranceId = null
+        releaseLetterPlayer()
+        activePlayId = 0
         uiHandler.removeCallbacksAndMessages(null)
         speechManager.setRecognitionSuspended(false)
         super.onStop()
@@ -290,12 +308,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        releaseLetterPlayer()
+        activePlayId = 0
         uiHandler.removeCallbacksAndMessages(null)
         speechManager.setRecognitionSuspended(false)
-        tts?.stop()
-        tts?.shutdown()
-        tts = null
-        ttsReady = false
         speechManager.destroy()
     }
 
@@ -304,21 +320,17 @@ class MainActivity : AppCompatActivity() {
         private const val STATS_NAME = "letterdrop_stats"
         private const val KEY_BEST = "best_score"
         /** 读音播完后延迟恢复识别，留一点时间让外放尾音散掉 */
-        private const val TTS_RESUME_DELAY_MS = 180L
+        private const val PLAYBACK_RESUME_DELAY_MS = 180L
 
-        /**
-         * 字母 -> 交给 TTS 拼读的词。用同音词而非单个字母字符，避免部分引擎
-         * 把 "A" 读成弱读的 /ə/；这些词与 Vosk 的识别词表一致，
-         * 让「听标准音 -> 跟读 -> 被判定」形成纠音闭环。
-         */
-        private val PRONUNCIATION: Map<Char, String> = mapOf(
-            'A' to "ay", 'B' to "bee", 'C' to "see", 'D' to "dee",
-            'E' to "ee", 'F' to "eff", 'G' to "gee", 'H' to "aitch",
-            'I' to "eye", 'J' to "jay", 'K' to "kay", 'L' to "ell",
-            'M' to "em", 'N' to "en", 'O' to "oh", 'P' to "pee",
-            'Q' to "cue", 'R' to "are", 'S' to "ess", 'T' to "tea",
-            'U' to "you", 'V' to "vee", 'W' to "double u", 'X' to "ex",
-            'Y' to "why", 'Z' to "zee"
+        /** A~Z 与 res/raw/letter_a~z.mp3 一一对应，编译期引用 */
+        private val LETTER_RES_IDS = intArrayOf(
+            R.raw.letter_a, R.raw.letter_b, R.raw.letter_c, R.raw.letter_d,
+            R.raw.letter_e, R.raw.letter_f, R.raw.letter_g, R.raw.letter_h,
+            R.raw.letter_i, R.raw.letter_j, R.raw.letter_k, R.raw.letter_l,
+            R.raw.letter_m, R.raw.letter_n, R.raw.letter_o, R.raw.letter_p,
+            R.raw.letter_q, R.raw.letter_r, R.raw.letter_s, R.raw.letter_t,
+            R.raw.letter_u, R.raw.letter_v, R.raw.letter_w, R.raw.letter_x,
+            R.raw.letter_y, R.raw.letter_z
         )
     }
 }
