@@ -93,9 +93,21 @@ class SpeechManager(
     private var modelReady = false
     private var unavailableReported = false
 
+    /**
+     * 播放标准读音期间挂起解码：录音线程继续读 PCM（不积压缓冲区），
+     * 但不把音频交给 Recognizer，避免 TTS 外放被自己识别后自动消除字母。
+     */
+    @Volatile
+    private var recognitionSuspended = false
+
     /** 模型已就绪且未被降级 */
     val isAvailable: Boolean get() = modelReady && !unavailableReported
     val isUnavailable: Boolean get() = unavailableReported
+
+    /** 由界面在 TTS 播放开始/结束时调用；幂等，可安全重复调用 */
+    fun setRecognitionSuspended(value: Boolean) {
+        recognitionSuspended = value
+    }
 
     private fun buildGrammar(): String {
         val arr = JSONArray()
@@ -191,9 +203,28 @@ class SpeechManager(
 
     private fun listenLoop(rec: Recognizer, ar: AudioRecord) {
         val buffer = ShortArray(2048)
+        var wasSuspended = false
         while (listening) {
             val n = ar.read(buffer, 0, buffer.size)
             if (n <= 0) continue
+            // 读音播放中：丢弃这段音频；恢复时 reset，清掉挂起前的残留识别状态
+            if (recognitionSuspended) {
+                if (!wasSuspended) {
+                    try {
+                        rec.reset()
+                    } catch (ignored: Throwable) {
+                    }
+                    wasSuspended = true
+                }
+                continue
+            }
+            if (wasSuspended) {
+                try {
+                    rec.reset()
+                } catch (ignored: Throwable) {
+                }
+                wasSuspended = false
+            }
             try {
                 if (rec.acceptWaveForm(buffer, n)) {
                     handleJson(rec.result)

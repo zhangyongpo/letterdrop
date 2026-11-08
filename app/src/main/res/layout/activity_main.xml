@@ -76,7 +76,7 @@
         android:id="@+id/statusText"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
-        android:text="点击开始，念出或点中掉落的字母"
+        android:text="点击开始，念出字母消除；点字母可听标准读音"
         android:textColor="#FFFFFF"
         android:textSize="16sp"
         android:gravity="center"

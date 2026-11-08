@@ -4,7 +4,7 @@
     <!-- Vosk 离线识别需要麦克风；不需要联网、不依赖 Google 语音服务 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- 麦克风不是必需硬件，没有麦克风的设备也能安装（走点字模式） -->
+    <!-- 麦克风不是必需硬件，没有麦克风的设备也能安装（降级为听音练习模式） -->
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application

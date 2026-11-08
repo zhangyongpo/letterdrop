@@ -18,8 +18,10 @@ import kotlin.math.min
  * 游戏画布：自绘 SurfaceView + 游戏线程。
  *
  * 1. 定时在顶部随机生成大写/小写字母并向下掉落；
- * 2. 念对字母（Vosk 离线识别）或点中字母 -> 消失动画；
+ * 2. 只有念对字母（Vosk 离线识别）才会消失并加分；
+ *    点中字母仅回调「播放标准读音」，不消除、不计分，供用户听音后跟读纠正；
  * 3. 落到地面 -> 扣一条命，命数为 0 时游戏结束；
+ *    语音不可用时进入听音练习模式，字母落地循环回顶部且不扣命；
  * 4. 掉落速度随得分自动提升：基础为第 2 档，每累计 20 分升 1 档，无上限。
  */
 class GameView @JvmOverloads constructor(
@@ -64,10 +66,12 @@ class GameView @JvmOverloads constructor(
     @Volatile
     var paused = false
 
-    /** 是否允许点中字母消除（默认开启，作为无语音服务时的保底玩法） */
-    var touchEnabled = true
+    /** 语音不可用/模型未就绪时的听音练习模式：落地不扣命，循环掉落供点读练习 */
+    @Volatile
+    var practiceMode = false
 
     private val stateListeners = mutableListOf<() -> Unit>()
+    private val tapListeners = mutableListOf<(Char) -> Unit>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val colors = listOf(
@@ -88,8 +92,17 @@ class GameView @JvmOverloads constructor(
         stateListeners.add(listener)
     }
 
+    /** 注册点读回调：点中字母时只请求播放标准读音，不参与消除判定 */
+    fun onLetterTapped(listener: (Char) -> Unit) {
+        tapListeners.add(listener)
+    }
+
     private fun notifyState() {
         mainHandler.post { stateListeners.forEach { it() } }
+    }
+
+    private fun notifyLetterTapped(letter: Char) {
+        mainHandler.post { tapListeners.forEach { it(letter) } }
     }
 
     fun startGame() {
@@ -157,7 +170,7 @@ class GameView @JvmOverloads constructor(
             while (iterator.hasNext()) {
                 val l = iterator.next()
                 if (l.popping) {
-                    // 被念对 / 被点中：缩小直到消失
+                    // 被念对：缩小直到消失
                     l.radius *= 0.82f
                     if (l.radius < 2f) {
                         iterator.remove()
@@ -167,8 +180,13 @@ class GameView @JvmOverloads constructor(
                     continue
                 }
                 l.y += dy
-                // 落到地面 = 失败
+                // 落到地面 = 失败；听音练习模式下循环回顶部，不扣命、不结束
                 if (l.y + l.radius >= viewHeight) {
+                    if (practiceMode) {
+                        l.y = -l.radius
+                        l.x = radius + random.nextFloat() * (viewWidth - 2 * radius)
+                        continue
+                    }
                     iterator.remove()
                     lives -= 1
                     notifyState()
@@ -198,7 +216,7 @@ class GameView @JvmOverloads constructor(
         letters.add(Letter(char, x, -radius, radius, color))
     }
 
-    /** 语音识别回调：把念对的字母对应的掉落字母标记为“消失” */
+    /** 语音识别回调：唯一的消除入口，把念对的字母对应的掉落字母标记为「消失」 */
     fun onLetterHeard(ch: Char) {
         synchronized(lock) {
             val target = letters.firstOrNull { !it.popping && it.name == ch }
@@ -206,16 +224,21 @@ class GameView @JvmOverloads constructor(
         }
     }
 
-    /** 点字模式：点中字母即消除，优先消掉最靠近地面的那个 */
+    /** 点字 = 听音：命中后只通知播放标准读音，绝不触发消除、加分或暂停下落 */
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (touchEnabled && !gameOver && !paused && event.actionMasked == MotionEvent.ACTION_DOWN) {
-            if (popLetterAt(event.x, event.y)) return true
+        if (!gameOver && !paused && event.actionMasked == MotionEvent.ACTION_DOWN) {
+            val target = findLetterAt(event.x, event.y)
+            if (target != null) {
+                notifyLetterTapped(target.name)
+                return true
+            }
         }
         return super.onTouchEvent(event)
     }
 
-    private fun popLetterAt(x: Float, y: Float): Boolean {
+    /** 找被点中的字母并做短暂高亮；重叠时取最靠近地面的那个 */
+    private fun findLetterAt(x: Float, y: Float): Letter? {
         synchronized(lock) {
             // 热区略大于圆圈，手机上更好点
             val target = letters.filter { l ->
@@ -224,8 +247,10 @@ class GameView @JvmOverloads constructor(
                 val dy = l.y - y
                 dx * dx + dy * dy <= l.radius * l.radius * 1.7f
             }.maxByOrNull { it.y }
-            target?.popping = true
-            return target != null
+            if (target != null) {
+                target.tapHighlightUntil = System.currentTimeMillis() + TAP_HIGHLIGHT_MS
+            }
+            return target
         }
     }
 
@@ -234,9 +259,23 @@ class GameView @JvmOverloads constructor(
         try {
             canvas.drawColor(Color.parseColor("#1B1F2A"))
             synchronized(lock) {
+                val now = System.currentTimeMillis()
                 for (l in letters) {
+                    paint.style = Paint.Style.FILL
+                    paint.strokeWidth = 0f
                     paint.color = l.color
                     canvas.drawCircle(l.x, l.y, l.radius, paint)
+
+                    // 点读反馈：一圈短暂的白色外环，仅表示"已播放读音"
+                    if (now < l.tapHighlightUntil) {
+                        paint.style = Paint.Style.STROKE
+                        paint.strokeWidth = l.radius * 0.14f
+                        paint.color = Color.WHITE
+                        canvas.drawCircle(l.x, l.y, l.radius * 1.16f, paint)
+                        paint.style = Paint.Style.FILL
+                        paint.strokeWidth = 0f
+                    }
+
                     paint.color = Color.WHITE
                     paint.textAlign = Paint.Align.CENTER
                     paint.textSize = l.radius * 1.2f
@@ -253,6 +292,8 @@ class GameView @JvmOverloads constructor(
     companion object {
         /** 字母生成间隔(ms)：固定不变，保证"出现数量"稳定、不随时间加快 */
         private const val SPAWN_INTERVAL_MS = 1500L
+        /** 点读高亮时长(ms) */
+        private const val TAP_HIGHLIGHT_MS = 260L
         /** 基础速度档位：最低速即原第 2 档 */
         const val BASE_LEVEL = 2
         private const val MIN_SPEED = 0.06f
